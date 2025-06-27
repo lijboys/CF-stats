@@ -1,8 +1,8 @@
-name: Fetch Cloudflare Stats
+name: 获取 Cloudflare 统计数据
 
 on:
   schedule:
-    # 每天下午4点和晚上11点UTC时间执行 (对应北京时间凌晨0点和早上7点)
+    # 每天下午4点和晚上11点（UTC时间）运行
     - cron: '0 16,23 * * *'
   workflow_dispatch:  # 允许手动触发
 
@@ -11,33 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
+      - name: 检出代码
         uses: actions/checkout@v4
       
-      - name: Set up Python
+      - name: 配置 Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.10'
       
-      - name: Install dependencies
+      - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
           pip install requests matplotlib
       
-      - name: Fetch Cloudflare stats
+      - name: 获取 Cloudflare 统计信息
         env:
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          python src/fetch_cloudflare_stats.py
-      
-      - name: Commit and push changes
-        run: |
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          git add history/
-          git commit -m "Update statistics" || echo "No changes to commit"
-          git push || echo "No changes to push"
-  
+          python src/fetch_cloudflare_stats.py  

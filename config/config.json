@@ -1,0 +1,24 @@
+{
+    "cloudflare": {
+        "account_id": "你的 Cloudflare 账户 ID",
+        "api_token": "你的 Cloudflare API 令牌"
+    },
+    "telegram": {
+        "bot_token": "你的 Telegram Bot 令牌",
+        "chat_id": "你的频道/聊天 ID"
+    },
+    "thresholds": {
+        "pages_request_increase": 30,
+        "pages_request_decrease": 25,
+        "workers_request_increase": 35,
+        "workers_request_decrease": 30
+    },
+    "retry": {
+        "max_attempts": 3,
+        "delay": 1
+    },
+    "history": {
+        "storage_days": 30,
+        "data_file": "history/history.json"
+    }
+}  

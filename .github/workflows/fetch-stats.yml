@@ -1,10 +1,9 @@
-name: 获取 Cloudflare 统计数据
+name: Fetch Cloudflare Stats
 
 on:
   schedule:
-    # 每天下午4点和晚上11点（UTC时间）运行
     - cron: '0 16,23 * * *'
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   fetch-stats:
@@ -13,6 +12,10 @@ jobs:
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+      
+      - name: 查看文件结构
+        run: |
+          ls -R  # 显示仓库所有文件，用于调试
       
       - name: 配置 Python
         uses: actions/setup-python@v5
@@ -31,4 +34,12 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: |
-          python src/fetch_cloudflare_stats.py  
+          python src/fetch_cloudflare_stats.py
+      
+      - name: 提交并推送更改
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add history/
+          git commit -m "Update statistics" || echo "No changes to commit"
+          git push || echo "No changes to push"  

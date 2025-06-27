@@ -1,425 +1,441 @@
 import os
-import json
 import requests
-import time
+import json
 import logging
 import matplotlib.pyplot as plt
-import numpy as np
 from datetime import datetime, timedelta
-from requests.exceptions import RequestException
+from typing import Dict, List, Any, Optional
+import numpy as np
+import time
 
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    encoding='utf-8'
 )
 logger = logging.getLogger(__name__)
 
+class CloudflareAPI:
+    """与 Cloudflare API 交互的类"""
+    
+    def __init__(self, account_id: str, api_token: str):
+        self.account_id = account_id
+        self.api_token = api_token
+        self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
+        self.headers = {
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json"
+        }
+    
+    def fetch_pages_projects(self) -> List[Dict[str, Any]]:
+        """获取 Cloudflare Pages 项目列表"""
+        try:
+            url = f"{self.base_url}/pages/projects"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()["result"]
+        except Exception as e:
+            logger.error(f"获取 Pages 项目失败: {str(e)}")
+            return []
+    
+    def fetch_workers(self) -> List[Dict[str, Any]]:
+        """获取 Cloudflare Workers 列表"""
+        try:
+            url = f"{self.base_url}/workers/scripts"
+            response = requests.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.json()["result"]
+        except Exception as e:
+            logger.error(f"获取 Workers 失败: {str(e)}")
+            return []
+    
+    def fetch_pages_metrics(self, project_name: str, start: str, end: str) -> Dict[str, Any]:
+        """获取 Pages 项目的指标数据"""
+        try:
+            url = f"{self.base_url}/pages/projects/{project_name}/metrics"
+            params = {
+                "since": start,
+                "until": end,
+                "continuous": "true"
+            }
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            return response.json()["result"]
+        except Exception as e:
+            logger.error(f"获取 Pages 指标失败: {str(e)}")
+            return {}
+    
+    def fetch_workers_metrics(self, script_name: str, start: str, end: str) -> Dict[str, Any]:
+        """获取 Workers 的指标数据"""
+        try:
+            url = f"{self.base_url}/workers/analytics/dashboard"
+            params = {
+                "script_name": script_name,
+                "since": start,
+                "until": end
+            }
+            response = requests.get(url, headers=self.headers, params=params)
+            response.raise_for_status()
+            return response.json()["result"]
+        except Exception as e:
+            logger.error(f"获取 Workers 指标失败: {str(e)}")
+            return {}
+
+class TelegramBot:
+    """与 Telegram Bot API 交互的类"""
+    
+    def __init__(self, bot_token: str, chat_id: str):
+        self.bot_token = bot_token
+        self.chat_id = chat_id
+        self.base_url = f"https://api.telegram.org/bot{bot_token}"
+    
+    def send_message(self, message: str) -> bool:
+        """发送消息到 Telegram"""
+        try:
+            url = f"{self.base_url}/sendMessage"
+            data = {
+                "chat_id": self.chat_id,
+                "text": message,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            }
+            response = requests.post(url, json=data)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"发送 Telegram 消息失败: {str(e)}")
+            return False
+    
+    def send_photo(self, photo_path: str, caption: str = "") -> bool:
+        """发送图片到 Telegram"""
+        try:
+            url = f"{self.base_url}/sendPhoto"
+            files = {'photo': open(photo_path, 'rb')}
+            data = {
+                "chat_id": self.chat_id,
+                "caption": caption,
+                "parse_mode": "Markdown"
+            }
+            response = requests.post(url, files=files, data=data)
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"发送 Telegram 图片失败: {str(e)}")
+            return False
+
 class CloudflareStatsTracker:
-    def __init__(self, config_path='config/config.json'):
-        self.config = self._load_config(config_path)
+    """Cloudflare 统计数据跟踪器"""
+    
+    def __init__(self, config_path: str = "config.json"):
+        # 加载配置
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                self.config = json.load(f)
+        except Exception as e:
+            logger.error(f"加载配置文件失败: {str(e)}")
+            raise
+        
+        # 初始化 API 客户端
+        self.cf_api = CloudflareAPI(
+            self.config["cloudflare"]["account_id"],
+            self.config["cloudflare"]["api_token"]
+        )
+        
+        self.tg_bot = TelegramBot(
+            self.config["telegram"]["bot_token"],
+            self.config["telegram"]["chat_id"]
+        )
+        
+        # 初始化数据存储
+        self.current_data = {"pages": {}, "workers": {}}
         self.history_data = self._load_history()
-        self.current_data = {}
-        self.retry_attempts = self.config['retry']['max_attempts']
-        self.retry_delay = self.config['retry']['delay']
-
-    def _load_config(self, config_path):
-        """加载配置文件"""
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"加载配置文件失败: {e}")
-            return {}
-
-    def _load_history(self):
+        self.thresholds = self.config.get("thresholds", {})
+        self.retry_config = self.config.get("retry", {
+            "max_attempts": 3,
+            "delay": 1
+        })
+    
+    def _load_history(self) -> Dict[str, Any]:
         """加载历史数据"""
-        history_file = self.config['history']['data_file']
-        if os.path.exists(history_file):
-            try:
-                with open(history_file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"加载历史数据失败: {e}")
-        return {}
-
-    def _save_history(self):
-        """保存历史数据"""
-        history_file = self.config['history']['data_file']
-        history_dir = os.path.dirname(history_file)
-        
-        # 创建历史数据目录（如果不存在）
-        if not os.path.exists(history_dir):
-            os.makedirs(history_dir)
-            
+        history_file = self.config["history"]["data_file"]
         try:
-            with open(history_file, 'w') as f:
-                json.dump(self.history_data, f, indent=2)
-            logger.info("历史数据已保存")
+            if os.path.exists(history_file):
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            return {"pages": {}, "workers": {}}
         except Exception as e:
-            logger.error(f"保存历史数据失败: {e}")
-
-    def _make_api_request(self, url, headers=None, params=None, method='GET'):
-        """发送API请求并处理重试"""
-        for attempt in range(self.retry_attempts):
+            logger.error(f"加载历史数据失败: {str(e)}")
+            return {"pages": {}, "workers": {}}
+    
+    def _save_history(self) -> None:
+        """保存历史数据"""
+        history_file = self.config["history"]["data_file"]
+        try:
+            with open(history_file, 'w', encoding='utf-8') as f:
+                json.dump(self.history_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存历史数据失败: {str(e)}")
+    
+    def _retry(self, func, *args, **kwargs):
+        """重试机制装饰器"""
+        max_attempts = self.retry_config.get("max_attempts", 3)
+        delay = self.retry_config.get("delay", 1)
+        
+        for attempt in range(max_attempts):
             try:
-                response = requests.request(method, url, headers=headers, params=params)
-                response.raise_for_status()
-                return response.json()
-            except RequestException as e:
-                logger.warning(f"API请求失败 (尝试 {attempt+1}/{self.retry_attempts}): {e}")
-                if attempt < self.retry_attempts - 1:
-                    time.sleep(self.retry_delay * (attempt + 1))  # 指数退避
-        logger.error("API请求达到最大重试次数")
-        return None
-
-    def fetch_pages_stats(self):
-        """获取Cloudflare Pages项目统计数据"""
-        account_id = self.config['cloudflare']['account_id']
-        api_token = self.config['cloudflare']['api_token']
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt == max_attempts - 1:
+                    raise
+                logger.warning(f"尝试 {attempt + 1}/{max_attempts} 失败: {str(e)}，{delay}秒后重试")
+                time.sleep(delay)
+    
+    def fetch_stats(self) -> None:
+        """获取当前统计数据"""
+        # 生成时间范围（过去24小时）
+        end_time = datetime.utcnow()
+        start_time = end_time - timedelta(hours=24)
         
-        headers = {
-            'Authorization': f'Bearer {api_token}',
-            'Content-Type': 'application/json'
-        }
+        # 转换为 RFC3339 格式
+        start_str = start_time.isoformat(timespec='seconds') + 'Z'
+        end_str = end_time.isoformat(timespec='seconds') + 'Z'
         
-        # 获取所有Pages项目
-        pages_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/pages/projects"
-        pages_data = self._make_api_request(pages_url, headers=headers)
+        # 获取 Pages 项目数据
+        pages_projects = self._retry(self.cf_api.fetch_pages_projects)
+        for project in pages_projects:
+            project_name = project["name"]
+            metrics = self._retry(self.cf_api.fetch_pages_metrics, project_name, start_str, end_str)
+            if metrics and "requests" in metrics:
+                self.current_data["pages"][project_name] = metrics["requests"]
         
-        if not pages_data or 'result' not in pages_data:
-            logger.error("获取Pages项目列表失败")
-            return {}
-            
-        projects = pages_data['result']
-        pages_stats = {}
+        # 获取 Workers 数据
+        workers = self._retry(self.cf_api.fetch_workers)
+        for worker in workers:
+            worker_name = worker["name"]
+            metrics = self._retry(self.cf_api.fetch_workers_metrics, worker_name, start_str, end_str)
+            if metrics and "requests" in metrics.get("script", {}):
+                self.current_data["workers"][worker_name] = metrics["script"]["requests"]
         
-        # 获取每个项目的请求量
-        for project in projects:
-            project_name = project['name']
-            project_id = project['id']
-            
-            # 构建时间范围（过去24小时）
-            end_time = datetime.now().isoformat() + 'Z'
-            start_time = (datetime.now() - timedelta(days=1)).isoformat() + 'Z'
-            
-            stats_url = (f"https://api.cloudflare.com/client/v4/accounts/{account_id}/analytics/pages/"
-                        f"projects/{project_id}/requests?since={start_time}&until={end_time}")
-            
-            stats_data = self._make_api_request(stats_url, headers=headers)
-            
-            if stats_data and 'result' in stats_data and 'all' in stats_data['result']:
-                requests_count = stats_data['result']['all']['requests']
-                pages_stats[project_name] = requests_count
-                logger.info(f"获取Pages项目 {project_name} 请求量: {requests_count}")
-            else:
-                pages_stats[project_name] = 0
-                logger.warning(f"获取Pages项目 {project_name} 请求量失败")
-        
-        self.current_data['pages'] = pages_stats
-        return pages_stats
-
-    def fetch_workers_stats(self):
-        """获取Cloudflare Workers统计数据"""
-        account_id = self.config['cloudflare']['account_id']
-        api_token = self.config['cloudflare']['api_token']
-        
-        headers = {
-            'Authorization': f'Bearer {api_token}',
-            'Content-Type': 'application/json'
-        }
-        
-        # 获取所有Workers服务
-        workers_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/services"
-        workers_data = self._make_api_request(workers_url, headers=headers)
-        
-        if not workers_data or 'result' not in workers_data:
-            logger.error("获取Workers服务列表失败")
-            return {}
-            
-        services = workers_data['result']
-        workers_stats = {}
-        
-        # 获取每个服务的请求量
-        for service in services:
-            service_name = service['name']
-            
-            # 构建时间范围（过去24小时）
-            end_time = int(time.time())
-            start_time = end_time - 86400  # 24小时前
-            
-            stats_url = (f"https://api.cloudflare.com/client/v4/accounts/{account_id}/workers/analytics/"
-                        f"requests?service={service_name}&from={start_time}&to={end_time}")
-            
-            stats_data = self._make_api_request(stats_url, headers=headers)
-            
-            if stats_data and 'result' in stats_data and 'sum' in stats_data['result']:
-                requests_count = stats_data['result']['sum']['requests']
-                workers_stats[service_name] = requests_count
-                logger.info(f"获取Workers服务 {service_name} 请求量: {requests_count}")
-            else:
-                workers_stats[service_name] = 0
-                logger.warning(f"获取Workers服务 {service_name} 请求量失败")
-        
-        self.current_data['workers'] = workers_stats
-        return workers_stats
-
-    def check_thresholds(self):
-        """检查请求量波动是否超过阈值"""
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        alerts = []
-        
-        # 获取昨天的日期
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        
-        # 检查Pages项目
-        if 'pages' in self.current_data and yesterday in self.history_data.get('pages', {}):
-            for project, current_count in self.current_data['pages'].items():
-                if project in self.history_data['pages'][yesterday]:
-                    yesterday_count = self.history_data['pages'][yesterday][project]
-                    
-                    if yesterday_count > 0:  # 避免除零错误
-                        increase_percent = ((current_count - yesterday_count) / yesterday_count) * 100
-                        
-                        # 检查增长阈值
-                        if increase_percent >= self.config['thresholds']['pages_request_increase']:
-                            alerts.append(
-                                f"📈 警告: Pages项目 '{project}' 请求量增长异常! "
-                                f"昨日: {yesterday_count}, 今日: {current_count}, 增长: {increase_percent:.1f}%"
-                            )
-                        
-                        # 检查下降阈值
-                        if increase_percent <= -self.config['thresholds']['pages_request_decrease']:
-                            alerts.append(
-                                f"📉 警告: Pages项目 '{project}' 请求量下降异常! "
-                                f"昨日: {yesterday_count}, 今日: {current_count}, 下降: {-increase_percent:.1f}%"
-                            )
-        
-        # 检查Workers服务
-        if 'workers' in self.current_data and yesterday in self.history_data.get('workers', {}):
-            for service, current_count in self.current_data['workers'].items():
-                if service in self.history_data['workers'][yesterday]:
-                    yesterday_count = self.history_data['workers'][yesterday][service]
-                    
-                    if yesterday_count > 0:  # 避免除零错误
-                        increase_percent = ((current_count - yesterday_count) / yesterday_count) * 100
-                        
-                        # 检查增长阈值
-                        if increase_percent >= self.config['thresholds']['workers_request_increase']:
-                            alerts.append(
-                                f"📈 警告: Workers服务 '{service}' 请求量增长异常! "
-                                f"昨日: {yesterday_count}, 今日: {current_count}, 增长: {increase_percent:.1f}%"
-                            )
-                        
-                        # 检查下降阈值
-                        if increase_percent <= -self.config['thresholds']['workers_request_decrease']:
-                            alerts.append(
-                                f"📉 警告: Workers服务 '{service}' 请求量下降异常! "
-                                f"昨日: {yesterday_count}, 今日: {current_count}, 下降: {-increase_percent:.1f}%"
-                            )
-        
-        return alerts
-
-    def update_history(self):
+        logger.info(f"成功获取统计数据: Pages项目={len(self.current_data['pages'])}, Workers={len(self.current_data['workers'])}")
+    
+    def update_history(self) -> None:
         """更新历史数据"""
-        current_date = datetime.now().strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")
         
-        # 更新Pages历史数据
-        if 'pages' in self.current_data:
-            if 'pages' not in self.history_data:
-                self.history_data['pages'] = {}
-            self.history_data['pages'][current_date] = self.current_data['pages']
+        # 更新 Pages 历史数据
+        for project, requests in self.current_data["pages"].items():
+            if project not in self.history_data["pages"]:
+                self.history_data["pages"][project] = {}
+            self.history_data["pages"][project][today] = requests
         
-        # 更新Workers历史数据
-        if 'workers' in self.current_data:
-            if 'workers' not in self.history_data:
-                self.history_data['workers'] = {}
-            self.history_data['workers'][current_date] = self.current_data['workers']
+        # 更新 Workers 历史数据
+        for worker, requests in self.current_data["workers"].items():
+            if worker not in self.history_data["workers"]:
+                self.history_data["workers"][worker] = {}
+            self.history_data["workers"][worker][today] = requests
         
         # 清理旧数据
-        self._cleanup_old_data()
+        storage_days = self.config["history"].get("storage_days", 30)
+        cutoff_date = (datetime.now() - timedelta(days=storage_days)).strftime("%Y-%m-%d")
+        
+        for project in self.history_data["pages"].values():
+            project = {date: req for date, req in project.items() if date >= cutoff_date}
+        
+        for worker in self.history_data["workers"].values():
+            worker = {date: req for date, req in worker.items() if date >= cutoff_date}
         
         # 保存历史数据
         self._save_history()
-
-    def _cleanup_old_data(self):
-        """清理过期的历史数据"""
-        storage_days = self.config['history']['storage_days']
-        cutoff_date = (datetime.now() - timedelta(days=storage_days)).strftime("%Y-%m-%d")
+    
+    def check_thresholds(self) -> List[str]:
+        """检查阈值并生成警报"""
+        alerts = []
+        today = datetime.now().strftime("%Y-%m-%d")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         
-        # 清理Pages历史数据
-        if 'pages' in self.history_data:
-            pages_data = self.history_data['pages']
-            self.history_data['pages'] = {date: data for date, data in pages_data.items() if date >= cutoff_date}
+        # 检查 Pages 项目
+        for project, requests in self.current_data["pages"].items():
+            if project in self.history_data["pages"] and yesterday in self.history_data["pages"][project]:
+                yesterday_requests = self.history_data["pages"][project][yesterday]
+                
+                # 计算变化百分比
+                if yesterday_requests > 0:
+                    change_percent = ((requests - yesterday_requests) / yesterday_requests) * 100
+                    
+                    # 检查增长阈值
+                    increase_threshold = self.thresholds.get("pages_request_increase", 30)
+                    if change_percent >= increase_threshold:
+                        alerts.append(f"📈 警告: Pages项目 '{project}' 请求量增长异常 ({change_percent:.1f}%)\n"
+                                     f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
+                    
+                    # 检查下降阈值
+                    decrease_threshold = self.thresholds.get("pages_request_decrease", 25)
+                    if change_percent <= -decrease_threshold:
+                        alerts.append(f"📉 警告: Pages项目 '{project}' 请求量下降异常 ({abs(change_percent):.1f}%)\n"
+                                     f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
         
-        # 清理Workers历史数据
-        if 'workers' in self.history_data:
-            workers_data = self.history_data['workers']
-            self.history_data['workers'] = {date: data for date, data in workers_data.items() if date >= cutoff_date}
-
-    def generate_charts(self):
+        # 检查 Workers 服务
+        for worker, requests in self.current_data["workers"].items():
+            if worker in self.history_data["workers"] and yesterday in self.history_data["workers"][worker]:
+                yesterday_requests = self.history_data["workers"][worker][yesterday]
+                
+                # 计算变化百分比
+                if yesterday_requests > 0:
+                    change_percent = ((requests - yesterday_requests) / yesterday_requests) * 100
+                    
+                    # 检查增长阈值
+                    increase_threshold = self.thresholds.get("workers_request_increase", 35)
+                    if change_percent >= increase_threshold:
+                        alerts.append(f"📈 警告: Workers服务 '{worker}' 请求量增长异常 ({change_percent:.1f}%)\n"
+                                     f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
+                    
+                    # 检查下降阈值
+                    decrease_threshold = self.thresholds.get("workers_request_decrease", 30)
+                    if change_percent <= -decrease_threshold:
+                        alerts.append(f"📉 警告: Workers服务 '{worker}' 请求量下降异常 ({abs(change_percent):.1f}%)\n"
+                                     f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
+        
+        return alerts
+    
+    def generate_charts(self) -> List[str]:
         """生成趋势图表"""
         charts = []
+        today = datetime.now().strftime("%Y-%m-%d")
         
-        # 生成Pages趋势图
-        if 'pages' in self.history_data and len(self.history_data['pages']) > 1:
-            chart_path = 'pages_trend.png'
-            self._generate_trend_chart(self.history_data['pages'], chart_path, "Cloudflare Pages 请求量趋势")
+        # 设置中文字体支持
+        plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
+        plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+        
+        # 生成 Pages 趋势图
+        if self.history_data["pages"]:
+            plt.figure(figsize=(12, 6))
+            
+            for project, data in self.history_data["pages"].items():
+                if len(data) > 1:  # 至少有两个数据点才绘制
+                    dates = sorted(data.keys())
+                    requests = [data[date] for date in dates]
+                    plt.plot(dates, requests, marker='o', label=project)
+            
+            plt.title("Cloudflare Pages 项目请求量趋势")
+            plt.xlabel("日期")
+            plt.ylabel("请求量")
+            plt.grid(True)
+            plt.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            
+            chart_path = "pages_trend.png"
+            plt.savefig(chart_path)
+            plt.close()
             charts.append(chart_path)
         
-        # 生成Workers趋势图
-        if 'workers' in self.history_data and len(self.history_data['workers']) > 1:
-            chart_path = 'workers_trend.png'
-            self._generate_trend_chart(self.history_data['workers'], chart_path, "Cloudflare Workers 请求量趋势")
+        # 生成 Workers 趋势图
+        if self.history_data["workers"]:
+            plt.figure(figsize=(12, 6))
+            
+            for worker, data in self.history_data["workers"].items():
+                if len(data) > 1:  # 至少有两个数据点才绘制
+                    dates = sorted(data.keys())
+                    requests = [data[date] for date in dates]
+                    plt.plot(dates, requests, marker='o', label=worker)
+            
+            plt.title("Cloudflare Workers 服务请求量趋势")
+            plt.xlabel("日期")
+            plt.ylabel("请求量")
+            plt.grid(True)
+            plt.legend()
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            
+            chart_path = "workers_trend.png"
+            plt.savefig(chart_path)
+            plt.close()
             charts.append(chart_path)
         
         return charts
-
-    def _generate_trend_chart(self, data, output_path, title):
-        """生成趋势图表"""
-        try:
-            # 确保中文显示正常
-            plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-            
-            # 按日期排序
-            sorted_dates = sorted(data.keys())
-            
-            # 获取所有项目/服务名称
-            all_items = set()
-            for date_data in data.values():
-                all_items.update(date_data.keys())
-            all_items = sorted(all_items)
-            
-            # 准备绘图数据
-            dates = []
-            item_data = {item: [] for item in all_items}
-            
-            for date in sorted_dates:
-                dates.append(date)
-                for item in all_items:
-                    item_data[item].append(data[date].get(item, 0))
-            
-            # 创建图表
-            plt.figure(figsize=(12, 6))
-            
-            for item, values in item_data.items():
-                plt.plot(dates, values, marker='o', label=item)
-            
-            plt.title(title)
-            plt.xlabel('日期')
-            plt.ylabel('请求量')
-            plt.grid(True)
-            plt.xticks(rotation=45)
-            plt.legend()
-            plt.tight_layout()
-            
-            # 保存图表
-            plt.savefig(output_path)
-            plt.close()
-            
-            logger.info(f"趋势图已保存到 {output_path}")
-        except Exception as e:
-            logger.error(f"生成趋势图失败: {e}")
-
-    def send_telegram_message(self, message, charts=None):
-        """发送消息到Telegram"""
-        bot_token = self.config['telegram']['bot_token']
-        chat_id = self.config['telegram']['chat_id']
+    
+    def generate_report(self) -> str:
+        """生成统计报告文本"""
+        report = "📊 *Cloudflare 统计报告*\n\n"
         
-        # 发送文本消息
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {
-            'chat_id': chat_id,
-            'text': message,
-            'parse_mode': 'Markdown'
-        }
+        # 添加日期
+        report += f"📅 统计日期: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n\n"
         
-        try:
-            response = requests.post(url, data=payload)
-            response.raise_for_status()
-            logger.info("Telegram消息发送成功")
-        except Exception as e:
-            logger.error(f"Telegram消息发送失败: {e}")
-            return False
-        
-        # 发送图表
-        if charts:
-            for chart_path in charts:
-                if os.path.exists(chart_path):
-                    url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-                    files = {'photo': open(chart_path, 'rb')}
-                    payload = {'chat_id': chat_id}
-                    
-                    try:
-                        response = requests.post(url, data=payload, files=files)
-                        response.raise_for_status()
-                        logger.info(f"图表 {chart_path} 发送成功")
-                    except Exception as e:
-                        logger.error(f"图表 {chart_path} 发送失败: {e}")
-        
-        return True
-
-    def generate_report(self):
-        """生成统计报告"""
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        report = f"📊 *Cloudflare 统计报告* - {current_time}\n\n"
-        
-        # 添加Pages统计
-        if 'pages' in self.current_data and self.current_data['pages']:
+        # 添加 Pages 项目数据
+        if self.current_data["pages"]:
             report += "### 📄 Pages 项目请求量\n"
-            for project, count in sorted(self.current_data['pages'].items()):
-                report += f"- {project}: {count:,} 请求\n"
+            for project, requests in sorted(self.current_data["pages"].items()):
+                report += f"- *{project}*: {requests:,} 请求\n"
             report += "\n"
         
-        # 添加Workers统计
-        if 'workers' in self.current_data and self.current_data['workers']:
+        # 添加 Workers 数据
+        if self.current_data["workers"]:
             report += "### 💻 Workers 服务请求量\n"
-            for service, count in sorted(self.current_data['workers'].items()):
-                report += f"- {service}: {count:,} 请求\n"
+            for worker, requests in sorted(self.current_data["workers"].items()):
+                report += f"- *{worker}*: {requests:,} 请求\n"
             report += "\n"
+        
+        # 添加数据更新说明
+        report += "🔄 数据每24小时更新一次\n"
+        report += "📈 图表展示最近7天趋势"
         
         return report
+    
+    def send_report(self) -> None:
+        """发送报告和图表"""
+        # 生成报告文本
+        report = self.generate_report()
+        
+        # 发送报告文本
+        success = self.tg_bot.send_message(report)
+        if not success:
+            logger.error("发送报告文本失败")
+            return
+        
+        # 检查并发送警报
+        alerts = self.check_thresholds()
+        if alerts:
+            alert_message = "\n\n⚠️ *异常情况警报* ⚠️\n\n" + "\n\n".join(alerts)
+            self.tg_bot.send_message(alert_message)
+        
+        # 生成并发送图表
+        charts = self.generate_charts()
+        for chart in charts:
+            if "pages" in chart:
+                caption = "📄 Cloudflare Pages 项目请求量趋势图"
+            else:
+                caption = "💻 Cloudflare Workers 服务请求量趋势图"
+            
+            self.tg_bot.send_photo(chart, caption)
 
-    def run(self):
-        """运行统计跟踪器"""
+def main():
+    try:
+        # 初始化跟踪器
+        tracker = CloudflareStatsTracker()
+        
+        # 获取统计数据
+        tracker.fetch_stats()
+        
+        # 更新历史数据
+        tracker.update_history()
+        
+        # 发送报告
+        tracker.send_report()
+        
+        logger.info("统计数据获取和推送完成")
+    except Exception as e:
+        logger.exception(f"执行过程中发生错误: {str(e)}")
+        # 发送错误通知
         try:
-            logger.info("开始获取Cloudflare统计数据...")
-            
-            # 获取统计数据
-            pages_stats = self.fetch_pages_stats()
-            workers_stats = self.fetch_workers_stats()
-            
-            if not pages_stats and not workers_stats:
-                logger.error("未获取到任何统计数据，任务终止")
-                return
-            
-            # 检查阈值
-            alerts = self.check_thresholds()
-            
-            # 更新历史数据
-            self.update_history()
-            
-            # 生成图表
-            charts = self.generate_charts()
-            
-            # 生成报告
-            report = self.generate_report()
-            
-            # 添加警报信息（如果有）
-            if alerts:
-                report += "\n⚠️ *警报信息*\n"
-                report += "\n".join(alerts)
-            
-            # 发送到Telegram
-            self.send_telegram_message(report, charts)
-            
-            logger.info("统计数据获取和推送完成")
-        except Exception as e:
-            logger.exception(f"执行过程中发生错误: {e}")
-            # 发送错误通知
-            error_msg = f"❗ *Cloudflare统计跟踪器错误*\n\n执行过程中发生错误:\n`{str(e)}`"
-            self.send_telegram_message(error_msg)
+            tg_bot = TelegramBot(
+                os.getenv("TG_BOT_TOKEN"),
+                os.getenv("TG_CHAT_ID")
+            )
+            error_msg = f"❌ *执行失败*\n\n错误信息: {str(e)}\n\n请检查日志获取更多详情"
+            tg_bot.send_message(error_msg)
+        except Exception:
+            logger.error("发送错误通知失败")
 
 if __name__ == "__main__":
-    tracker = CloudflareStatsTracker()
-    tracker.run()  
+    main()  

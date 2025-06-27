@@ -232,9 +232,17 @@ class CloudflareStatsTracker:
         
         workers = self._retry(self.cf_api.fetch_workers)
         for worker in workers:
-            worker_name = worker["name"]
+            # 关键修改：安全获取 worker 名称
+            worker_name = worker.get("name", f"未知Worker_{id(worker)}")
+            logger.info(f"处理 Worker: {worker_name}")  # 添加日志帮助调试
+            
+            # 验证 worker 对象结构是否符合预期
+            if not isinstance(worker, dict):
+                logger.warning(f"Worker 对象不是字典类型: {type(worker)}")
+                continue
+            
             metrics = self._retry(self.cf_api.fetch_workers_metrics, worker_name, start_str, end_str)
-            if metrics and "requests" in metrics.get("script", {}):
+            if metrics and "script" in metrics and "requests" in metrics["script"]:
                 self.current_data["workers"][worker_name] = metrics["script"]["requests"]
         
         logger.info(f"成功获取统计数据: Pages项目={len(self.current_data['pages'])}, Workers={len(self.current_data['workers'])}")

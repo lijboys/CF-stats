@@ -1,9 +1,10 @@
-name: Fetch Cloudflare Stats
+name: 获取 Cloudflare 统计数据
 
 on:
   schedule:
+    # 每天下午4点和晚上11点（UTC时间）运行
     - cron: '0 16,23 * * *'
-  workflow_dispatch:
+  workflow_dispatch:  # 允许手动触发
 
 jobs:
   fetch-stats:
@@ -13,9 +14,10 @@ jobs:
       - name: 检出代码
         uses: actions/checkout@v4
       
-      - name: 查看文件结构
+      - name: 显示文件结构（用于调试）
         run: |
-          ls -R  # 显示仓库所有文件，用于调试
+          echo "仓库文件结构:"
+          tree -a || ls -R  # 显示所有文件，包括隐藏文件
       
       - name: 配置 Python
         uses: actions/setup-python@v5

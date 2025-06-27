@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 import numpy as np
 import time
-from urllib.parse import quote  # 新增：用于 URL 编码
+from urllib.parse import quote
 
 # 配置日志
 logging.basicConfig(
@@ -24,15 +24,12 @@ class CloudflareAPI:
         self.account_id = account_id
         self.api_token = api_token
         self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
-        
-        # 确保 API Token 被正确编码
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
         }
     
     def fetch_pages_projects(self) -> List[Dict[str, Any]]:
-        """获取 Cloudflare Pages 项目列表"""
         try:
             url = f"{self.base_url}/pages/projects"
             response = requests.get(url, headers=self.headers)
@@ -40,13 +37,9 @@ class CloudflareAPI:
             return response.json()["result"]
         except Exception as e:
             logger.error(f"获取 Pages 项目失败: {str(e)}")
-            # 新增：记录详细的错误信息
-            logger.error(f"请求 URL: {url}")
-            logger.error(f"请求头: {self.headers}")
             return []
     
     def fetch_workers(self) -> List[Dict[str, Any]]:
-        """获取 Cloudflare Workers 列表"""
         try:
             url = f"{self.base_url}/workers/scripts"
             response = requests.get(url, headers=self.headers)
@@ -54,15 +47,10 @@ class CloudflareAPI:
             return response.json()["result"]
         except Exception as e:
             logger.error(f"获取 Workers 失败: {str(e)}")
-            # 新增：记录详细的错误信息
-            logger.error(f"请求 URL: {url}")
-            logger.error(f"请求头: {self.headers}")
             return []
     
     def fetch_pages_metrics(self, project_name: str, start: str, end: str) -> Dict[str, Any]:
-        """获取 Pages 项目的指标数据"""
         try:
-            # 新增：对 project_name 进行 URL 编码
             encoded_project_name = quote(project_name, safe='')
             url = f"{self.base_url}/pages/projects/{encoded_project_name}/metrics"
             params = {
@@ -78,9 +66,7 @@ class CloudflareAPI:
             return {}
     
     def fetch_workers_metrics(self, script_name: str, start: str, end: str) -> Dict[str, Any]:
-        """获取 Workers 的指标数据"""
         try:
-            # 新增：对 script_name 进行 URL 编码
             encoded_script_name = quote(script_name, safe='')
             url = f"{self.base_url}/workers/analytics/dashboard"
             params = {
@@ -99,19 +85,12 @@ class TelegramBot:
     """与 Telegram Bot API 交互的类"""
     
     def __init__(self, bot_token: str, chat_id: str):
-        # 新增：验证 Bot Token 是否包含占位文本
-        if "你的 Telegram Bot" in bot_token:
-            logger.error("Telegram Bot Token 包含占位文本，请替换为实际 Token")
-        
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
-        
-        # 新增：记录 Bot Token 信息（用于调试）
-        logger.info(f"Telegram Bot Token 前5位: {bot_token[:5]}")
+        logger.info(f"Telegram Bot Token 验证: {bot_token[:5] + '...'}")
     
     def send_message(self, message: str) -> bool:
-        """发送消息到 Telegram"""
         try:
             url = f"{self.base_url}/sendMessage"
             data = {
@@ -125,13 +104,9 @@ class TelegramBot:
             return True
         except Exception as e:
             logger.error(f"发送 Telegram 消息失败: {str(e)}")
-            # 新增：记录详细的错误信息
-            logger.error(f"请求 URL: {url}")
-            logger.error(f"请求数据: {data}")
             return False
     
     def send_photo(self, photo_path: str, caption: str = "") -> bool:
-        """发送图片到 Telegram"""
         try:
             url = f"{self.base_url}/sendPhoto"
             files = {'photo': open(photo_path, 'rb')}
@@ -151,49 +126,46 @@ class CloudflareStatsTracker:
     """Cloudflare 统计数据跟踪器"""
     
     def __init__(self, config_path: str = "config/config.json"):
-        # 加载配置
-        try:
-            if not os.path.exists(config_path):
-                logger.error(f"配置文件不存在: {config_path}")
-                logger.error(f"当前工作目录: {os.getcwd()}")
-                logger.error(f"文件列表: {os.listdir()}")
-                raise FileNotFoundError(f"配置文件不存在: {config_path}")
-            
-            with open(config_path, 'r', encoding='utf-8') as f:
-                self.config = json.load(f)
-                
-                # 新增：验证配置中的 Token 是否有效
-                if "你的 Cloudflare" in self.config["cloudflare"]["api_token"]:
-                    logger.error("Cloudflare API Token 包含占位文本，请替换为实际 Token")
-                if "你的 Telegram" in self.config["telegram"]["bot_token"]:
-                    logger.error("Telegram Bot Token 包含占位文本，请替换为实际 Token")
-        except Exception as e:
-            logger.error(f"加载配置文件失败: {str(e)}")
-            raise
+        # 从环境变量读取敏感信息（优先于配置文件）
+        self.cf_account_id = os.getenv("CF_ACCOUNT_ID")
+        self.cf_api_token = os.getenv("CF_API_TOKEN")
+        self.tg_bot_token = os.getenv("TG_BOT_TOKEN")
+        self.tg_chat_id = os.getenv("TG_CHAT_ID")
+        
+        # 验证环境变量
+        if not all([self.cf_account_id, self.cf_api_token, self.tg_bot_token, self.tg_chat_id]):
+            logger.error("环境变量中缺少必要的配置，请检查 GitHub Secrets")
+            # 尝试从配置文件读取（作为备用）
+            self._load_config(config_path)
         
         # 初始化 API 客户端
-        self.cf_api = CloudflareAPI(
-            self.config["cloudflare"]["account_id"],
-            self.config["cloudflare"]["api_token"]
-        )
-        
-        self.tg_bot = TelegramBot(
-            self.config["telegram"]["bot_token"],
-            self.config["telegram"]["chat_id"]
-        )
+        self.cf_api = CloudflareAPI(self.cf_account_id, self.cf_api_token)
+        self.tg_bot = TelegramBot(self.tg_bot_token, self.tg_chat_id)
         
         # 初始化数据存储
         self.current_data = {"pages": {}, "workers": {}}
         self.history_data = self._load_history()
-        self.thresholds = self.config.get("thresholds", {})
-        self.retry_config = self.config.get("retry", {
-            "max_attempts": 3,
-            "delay": 1
-        })
+        self.thresholds = self._get_thresholds()
+        self.retry_config = self._get_retry_config()
+    
+    def _load_config(self, config_path: str) -> None:
+        """从配置文件加载非敏感配置（备用方案）"""
+        try:
+            if os.path.exists(config_path):
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                # 从配置文件读取备用配置
+                self.cf_account_id = self.cf_account_id or config.get("cloudflare", {}).get("account_id")
+                self.cf_api_token = self.cf_api_token or config.get("cloudflare", {}).get("api_token")
+                self.tg_bot_token = self.tg_bot_token or config.get("telegram", {}).get("bot_token")
+                self.tg_chat_id = self.tg_chat_id or config.get("telegram", {}).get("chat_id")
+        except Exception as e:
+            logger.error(f"加载配置文件失败: {str(e)}")
     
     def _load_history(self) -> Dict[str, Any]:
         """加载历史数据"""
-        history_file = self.config["history"]["data_file"]
+        history_file = os.getenv("HISTORY_FILE", "history/history.json")
         try:
             os.makedirs(os.path.dirname(history_file), exist_ok=True)
             if os.path.exists(history_file):
@@ -206,7 +178,7 @@ class CloudflareStatsTracker:
     
     def _save_history(self) -> None:
         """保存历史数据"""
-        history_file = self.config["history"]["data_file"]
+        history_file = os.getenv("HISTORY_FILE", "history/history.json")
         try:
             os.makedirs(os.path.dirname(history_file), exist_ok=True)
             with open(history_file, 'w', encoding='utf-8') as f:
@@ -214,10 +186,26 @@ class CloudflareStatsTracker:
         except Exception as e:
             logger.error(f"保存历史数据失败: {str(e)}")
     
+    def _get_thresholds(self) -> Dict[str, int]:
+        """获取阈值配置（从环境变量或默认值）"""
+        thresholds = {}
+        for key in ["pages_request_increase", "pages_request_decrease", 
+                   "workers_request_increase", "workers_request_decrease"]:
+            env_key = f"THRESHOLD_{key.upper()}"
+            thresholds[key] = int(os.getenv(env_key, 30)) if key.startswith("pages") else int(os.getenv(env_key, 35))
+        return thresholds
+    
+    def _get_retry_config(self) -> Dict[str, int]:
+        """获取重试配置（从环境变量或默认值）"""
+        return {
+            "max_attempts": int(os.getenv("RETRY_MAX_ATTEMPTS", 3)),
+            "delay": int(os.getenv("RETRY_DELAY", 1))
+        }
+    
     def _retry(self, func, *args, **kwargs):
         """重试机制装饰器"""
-        max_attempts = self.retry_config.get("max_attempts", 3)
-        delay = self.retry_config.get("delay", 1)
+        max_attempts = self.retry_config["max_attempts"]
+        delay = self.retry_config["delay"]
         
         for attempt in range(max_attempts):
             try:
@@ -230,15 +218,11 @@ class CloudflareStatsTracker:
     
     def fetch_stats(self) -> None:
         """获取当前统计数据"""
-        # 生成时间范围（过去24小时）
         end_time = datetime.utcnow()
         start_time = end_time - timedelta(hours=24)
-        
-        # 转换为 RFC3339 格式
         start_str = start_time.isoformat(timespec='seconds') + 'Z'
         end_str = end_time.isoformat(timespec='seconds') + 'Z'
         
-        # 获取 Pages 项目数据
         pages_projects = self._retry(self.cf_api.fetch_pages_projects)
         for project in pages_projects:
             project_name = project["name"]
@@ -246,7 +230,6 @@ class CloudflareStatsTracker:
             if metrics and "requests" in metrics:
                 self.current_data["pages"][project_name] = metrics["requests"]
         
-        # 获取 Workers 数据
         workers = self._retry(self.cf_api.fetch_workers)
         for worker in workers:
             worker_name = worker["name"]
@@ -260,20 +243,17 @@ class CloudflareStatsTracker:
         """更新历史数据"""
         today = datetime.now().strftime("%Y-%m-%d")
         
-        # 更新 Pages 历史数据
         for project, requests in self.current_data["pages"].items():
             if project not in self.history_data["pages"]:
                 self.history_data["pages"][project] = {}
             self.history_data["pages"][project][today] = requests
         
-        # 更新 Workers 历史数据
         for worker, requests in self.current_data["workers"].items():
             if worker not in self.history_data["workers"]:
                 self.history_data["workers"][worker] = {}
             self.history_data["workers"][worker][today] = requests
         
-        # 清理旧数据
-        storage_days = self.config["history"].get("storage_days", 30)
+        storage_days = int(os.getenv("HISTORY_STORAGE_DAYS", 30))
         cutoff_date = (datetime.now() - timedelta(days=storage_days)).strftime("%Y-%m-%d")
         
         for project in list(self.history_data["pages"].keys()):
@@ -286,7 +266,6 @@ class CloudflareStatsTracker:
             if not self.history_data["workers"][worker]:
                 del self.history_data["workers"][worker]
         
-        # 保存历史数据
         self._save_history()
     
     def check_thresholds(self) -> List[str]:
@@ -295,45 +274,27 @@ class CloudflareStatsTracker:
         today = datetime.now().strftime("%Y-%m-%d")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         
-        # 检查 Pages 项目
         for project, requests in self.current_data["pages"].items():
             if project in self.history_data["pages"] and yesterday in self.history_data["pages"][project]:
                 yesterday_requests = self.history_data["pages"][project][yesterday]
-                
-                # 计算变化百分比
                 if yesterday_requests > 0:
                     change_percent = ((requests - yesterday_requests) / yesterday_requests) * 100
-                    
-                    # 检查增长阈值
-                    increase_threshold = self.thresholds.get("pages_request_increase", 30)
-                    if change_percent >= increase_threshold:
+                    if change_percent >= self.thresholds["pages_request_increase"]:
                         alerts.append(f"📈 警告: Pages项目 '{project}' 请求量增长异常 ({change_percent:.1f}%)\n"
                                      f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
-                    
-                    # 检查下降阈值
-                    decrease_threshold = self.thresholds.get("pages_request_decrease", 25)
-                    if change_percent <= -decrease_threshold:
+                    if change_percent <= -self.thresholds["pages_request_decrease"]:
                         alerts.append(f"📉 警告: Pages项目 '{project}' 请求量下降异常 ({abs(change_percent):.1f}%)\n"
                                      f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
         
-        # 检查 Workers 服务
         for worker, requests in self.current_data["workers"].items():
             if worker in self.history_data["workers"] and yesterday in self.history_data["workers"][worker]:
                 yesterday_requests = self.history_data["workers"][worker][yesterday]
-                
-                # 计算变化百分比
                 if yesterday_requests > 0:
                     change_percent = ((requests - yesterday_requests) / yesterday_requests) * 100
-                    
-                    # 检查增长阈值
-                    increase_threshold = self.thresholds.get("workers_request_increase", 35)
-                    if change_percent >= increase_threshold:
+                    if change_percent >= self.thresholds["workers_request_increase"]:
                         alerts.append(f"📈 警告: Workers服务 '{worker}' 请求量增长异常 ({change_percent:.1f}%)\n"
                                      f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
-                    
-                    # 检查下降阈值
-                    decrease_threshold = self.thresholds.get("workers_request_decrease", 30)
-                    if change_percent <= -decrease_threshold:
+                    if change_percent <= -self.thresholds["workers_request_decrease"]:
                         alerts.append(f"📉 警告: Workers服务 '{worker}' 请求量下降异常 ({abs(change_percent):.1f}%)\n"
                                      f"昨日: {yesterday_requests:,} → 今日: {requests:,}")
         
@@ -342,22 +303,16 @@ class CloudflareStatsTracker:
     def generate_charts(self) -> List[str]:
         """生成趋势图表"""
         charts = []
-        today = datetime.now().strftime("%Y-%m-%d")
-        
-        # 设置中文字体支持
         plt.rcParams["font.family"] = ["SimHei", "WenQuanYi Micro Hei", "Heiti TC"]
-        plt.rcParams["axes.unicode_minus"] = False  # 解决负号显示问题
+        plt.rcParams["axes.unicode_minus"] = False
         
-        # 生成 Pages 趋势图
         if self.history_data["pages"]:
             plt.figure(figsize=(12, 6))
-            
             for project, data in self.history_data["pages"].items():
-                if len(data) > 1:  # 至少有两个数据点才绘制
+                if len(data) > 1:
                     dates = sorted(data.keys())
                     requests = [data[date] for date in dates]
                     plt.plot(dates, requests, marker='o', label=project)
-            
             plt.title("Cloudflare Pages 项目请求量趋势")
             plt.xlabel("日期")
             plt.ylabel("请求量")
@@ -365,22 +320,18 @@ class CloudflareStatsTracker:
             plt.legend()
             plt.xticks(rotation=45)
             plt.tight_layout()
-            
             chart_path = "pages_trend.png"
             plt.savefig(chart_path)
             plt.close()
             charts.append(chart_path)
         
-        # 生成 Workers 趋势图
         if self.history_data["workers"]:
             plt.figure(figsize=(12, 6))
-            
             for worker, data in self.history_data["workers"].items():
-                if len(data) > 1:  # 至少有两个数据点才绘制
+                if len(data) > 1:
                     dates = sorted(data.keys())
                     requests = [data[date] for date in dates]
                     plt.plot(dates, requests, marker='o', label=worker)
-            
             plt.title("Cloudflare Workers 服务请求量趋势")
             plt.xlabel("日期")
             plt.ylabel("请求量")
@@ -388,7 +339,6 @@ class CloudflareStatsTracker:
             plt.legend()
             plt.xticks(rotation=45)
             plt.tight_layout()
-            
             chart_path = "workers_trend.png"
             plt.savefig(chart_path)
             plt.close()
@@ -399,80 +349,56 @@ class CloudflareStatsTracker:
     def generate_report(self) -> str:
         """生成统计报告文本"""
         report = "📊 *Cloudflare 统计报告*\n\n"
-        
-        # 添加日期
         report += f"📅 统计日期: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')}\n\n"
         
-        # 添加 Pages 项目数据
         if self.current_data["pages"]:
             report += "### 📄 Pages 项目请求量\n"
             for project, requests in sorted(self.current_data["pages"].items()):
                 report += f"- *{project}*: {requests:,} 请求\n"
             report += "\n"
         
-        # 添加 Workers 数据
         if self.current_data["workers"]:
             report += "### 💻 Workers 服务请求量\n"
             for worker, requests in sorted(self.current_data["workers"].items()):
                 report += f"- *{worker}*: {requests:,} 请求\n"
             report += "\n"
         
-        # 添加数据更新说明
         report += "🔄 数据每24小时更新一次\n"
         report += "📈 图表展示最近7天趋势"
-        
         return report
     
     def send_report(self) -> None:
         """发送报告和图表"""
-        # 生成报告文本
         report = self.generate_report()
-        
-        # 发送报告文本
         success = self.tg_bot.send_message(report)
         if not success:
             logger.error("发送报告文本失败")
             return
         
-        # 检查并发送警报
         alerts = self.check_thresholds()
         if alerts:
             alert_message = "\n\n⚠️ *异常情况警报* ⚠️\n\n" + "\n\n".join(alerts)
             self.tg_bot.send_message(alert_message)
         
-        # 生成并发送图表
         charts = self.generate_charts()
         for chart in charts:
             if "pages" in chart:
                 caption = "📄 Cloudflare Pages 项目请求量趋势图"
             else:
                 caption = "💻 Cloudflare Workers 服务请求量趋势图"
-            
             self.tg_bot.send_photo(chart, caption)
 
 def main():
     try:
-        # 初始化跟踪器
         tracker = CloudflareStatsTracker()
-        
-        # 获取统计数据
         tracker.fetch_stats()
-        
-        # 更新历史数据
         tracker.update_history()
-        
-        # 发送报告
         tracker.send_report()
-        
         logger.info("统计数据获取和推送完成")
     except Exception as e:
         logger.exception(f"执行过程中发生错误: {str(e)}")
-        # 发送错误通知
         try:
-            tg_bot = TelegramBot(
-                os.getenv("TG_BOT_TOKEN"),
-                os.getenv("TG_CHAT_ID")
-            )
+            tg_bot = TelegramBot(os.getenv("TG_BOT_TOKEN"), os.getenv("TG_CHAT_ID"))
             error_msg = f"❌ *执行失败*\n\n错误信息: {str(e)}\n\n请检查日志获取更多详情"
             tg_bot.send_message(error_msg)
         except Exception:

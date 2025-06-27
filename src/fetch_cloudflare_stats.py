@@ -127,16 +127,16 @@ class TelegramBot:
 class CloudflareStatsTracker:
     """Cloudflare 统计数据跟踪器"""
     
-    def __init__(self, config_path: str = "config/config.json"):  # 修改：使用相对路径
+    def __init__(self, config_path: str = "config/config.json"):  # 修改为实际路径
+        # 检查配置文件是否存在
+        if not os.path.exists(config_path):
+            logger.error(f"配置文件不存在: {config_path}")
+            logger.error(f"当前工作目录: {os.getcwd()}")
+            logger.error(f"目录内容: {os.listdir()}")
+            raise FileNotFoundError(f"配置文件不存在: {config_path}")
+        
         # 加载配置
         try:
-            # 确保配置文件存在
-            if not os.path.exists(config_path):
-                logger.error(f"配置文件不存在: {config_path}")
-                logger.error(f"当前工作目录: {os.getcwd()}")
-                logger.error(f"文件列表: {os.listdir()}")
-                raise FileNotFoundError(f"配置文件不存在: {config_path}")
-            
             with open(config_path, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
         except Exception as e:
@@ -154,6 +154,11 @@ class CloudflareStatsTracker:
             self.config["telegram"]["chat_id"]
         )
         
+        # 确保历史数据目录存在
+        history_dir = os.path.dirname(self.config["history"]["data_file"])
+        if not os.path.exists(history_dir):
+            os.makedirs(history_dir)
+        
         # 初始化数据存储
         self.current_data = {"pages": {}, "workers": {}}
         self.history_data = self._load_history()
@@ -167,9 +172,6 @@ class CloudflareStatsTracker:
         """加载历史数据"""
         history_file = self.config["history"]["data_file"]
         try:
-            # 创建历史数据目录（如果不存在）
-            os.makedirs(os.path.dirname(history_file), exist_ok=True)
-            
             if os.path.exists(history_file):
                 with open(history_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
@@ -182,9 +184,6 @@ class CloudflareStatsTracker:
         """保存历史数据"""
         history_file = self.config["history"]["data_file"]
         try:
-            # 创建历史数据目录（如果不存在）
-            os.makedirs(os.path.dirname(history_file), exist_ok=True)
-            
             with open(history_file, 'w', encoding='utf-8') as f:
                 json.dump(self.history_data, f, ensure_ascii=False, indent=2)
         except Exception as e:

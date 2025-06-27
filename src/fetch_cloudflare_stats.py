@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 import numpy as np
 import time
+from urllib.parse import quote  # 新增：用于 URL 编码
 
 # 配置日志
 logging.basicConfig(
@@ -24,7 +25,7 @@ class CloudflareAPI:
         self.api_token = api_token
         self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
         
-        # 确保API Token被正确编码
+        # 确保 API Token 被正确编码
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
@@ -39,6 +40,9 @@ class CloudflareAPI:
             return response.json()["result"]
         except Exception as e:
             logger.error(f"获取 Pages 项目失败: {str(e)}")
+            # 新增：记录详细的错误信息
+            logger.error(f"请求 URL: {url}")
+            logger.error(f"请求头: {self.headers}")
             return []
     
     def fetch_workers(self) -> List[Dict[str, Any]]:
@@ -50,12 +54,17 @@ class CloudflareAPI:
             return response.json()["result"]
         except Exception as e:
             logger.error(f"获取 Workers 失败: {str(e)}")
+            # 新增：记录详细的错误信息
+            logger.error(f"请求 URL: {url}")
+            logger.error(f"请求头: {self.headers}")
             return []
     
     def fetch_pages_metrics(self, project_name: str, start: str, end: str) -> Dict[str, Any]:
         """获取 Pages 项目的指标数据"""
         try:
-            url = f"{self.base_url}/pages/projects/{project_name}/metrics"
+            # 新增：对 project_name 进行 URL 编码
+            encoded_project_name = quote(project_name, safe='')
+            url = f"{self.base_url}/pages/projects/{encoded_project_name}/metrics"
             params = {
                 "since": start,
                 "until": end,
@@ -71,9 +80,11 @@ class CloudflareAPI:
     def fetch_workers_metrics(self, script_name: str, start: str, end: str) -> Dict[str, Any]:
         """获取 Workers 的指标数据"""
         try:
+            # 新增：对 script_name 进行 URL 编码
+            encoded_script_name = quote(script_name, safe='')
             url = f"{self.base_url}/workers/analytics/dashboard"
             params = {
-                "script_name": script_name,
+                "script_name": encoded_script_name,
                 "since": start,
                 "until": end
             }
@@ -88,10 +99,16 @@ class TelegramBot:
     """与 Telegram Bot API 交互的类"""
     
     def __init__(self, bot_token: str, chat_id: str):
-        # 确保Bot Token不包含占位文本
+        # 新增：验证 Bot Token 是否包含占位文本
+        if "你的 Telegram Bot" in bot_token:
+            logger.error("Telegram Bot Token 包含占位文本，请替换为实际 Token")
+        
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
+        
+        # 新增：记录 Bot Token 信息（用于调试）
+        logger.info(f"Telegram Bot Token 前5位: {bot_token[:5]}")
     
     def send_message(self, message: str) -> bool:
         """发送消息到 Telegram"""
@@ -103,12 +120,14 @@ class TelegramBot:
                 "parse_mode": "Markdown",
                 "disable_web_page_preview": True
             }
-            # 确保消息被正确编码
             response = requests.post(url, json=data)
             response.raise_for_status()
             return True
         except Exception as e:
             logger.error(f"发送 Telegram 消息失败: {str(e)}")
+            # 新增：记录详细的错误信息
+            logger.error(f"请求 URL: {url}")
+            logger.error(f"请求数据: {data}")
             return False
     
     def send_photo(self, photo_path: str, caption: str = "") -> bool:
@@ -142,6 +161,12 @@ class CloudflareStatsTracker:
             
             with open(config_path, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
+                
+                # 新增：验证配置中的 Token 是否有效
+                if "你的 Cloudflare" in self.config["cloudflare"]["api_token"]:
+                    logger.error("Cloudflare API Token 包含占位文本，请替换为实际 Token")
+                if "你的 Telegram" in self.config["telegram"]["bot_token"]:
+                    logger.error("Telegram Bot Token 包含占位文本，请替换为实际 Token")
         except Exception as e:
             logger.error(f"加载配置文件失败: {str(e)}")
             raise

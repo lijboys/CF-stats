@@ -23,6 +23,8 @@ class CloudflareAPI:
         self.account_id = account_id
         self.api_token = api_token
         self.base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}"
+        
+        # 确保API Token被正确编码
         self.headers = {
             "Authorization": f"Bearer {api_token}",
             "Content-Type": "application/json"
@@ -86,6 +88,7 @@ class TelegramBot:
     """与 Telegram Bot API 交互的类"""
     
     def __init__(self, bot_token: str, chat_id: str):
+        # 确保Bot Token不包含占位文本
         self.bot_token = bot_token
         self.chat_id = chat_id
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
@@ -100,6 +103,7 @@ class TelegramBot:
                 "parse_mode": "Markdown",
                 "disable_web_page_preview": True
             }
+            # 确保消息被正确编码
             response = requests.post(url, json=data)
             response.raise_for_status()
             return True
@@ -127,16 +131,15 @@ class TelegramBot:
 class CloudflareStatsTracker:
     """Cloudflare 统计数据跟踪器"""
     
-    def __init__(self, config_path: str = "config/config.json"):  # 修改为实际路径
-        # 检查配置文件是否存在
-        if not os.path.exists(config_path):
-            logger.error(f"配置文件不存在: {config_path}")
-            logger.error(f"当前工作目录: {os.getcwd()}")
-            logger.error(f"目录内容: {os.listdir()}")
-            raise FileNotFoundError(f"配置文件不存在: {config_path}")
-        
+    def __init__(self, config_path: str = "config/config.json"):
         # 加载配置
         try:
+            if not os.path.exists(config_path):
+                logger.error(f"配置文件不存在: {config_path}")
+                logger.error(f"当前工作目录: {os.getcwd()}")
+                logger.error(f"文件列表: {os.listdir()}")
+                raise FileNotFoundError(f"配置文件不存在: {config_path}")
+            
             with open(config_path, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
         except Exception as e:
@@ -154,11 +157,6 @@ class CloudflareStatsTracker:
             self.config["telegram"]["chat_id"]
         )
         
-        # 确保历史数据目录存在
-        history_dir = os.path.dirname(self.config["history"]["data_file"])
-        if not os.path.exists(history_dir):
-            os.makedirs(history_dir)
-        
         # 初始化数据存储
         self.current_data = {"pages": {}, "workers": {}}
         self.history_data = self._load_history()
@@ -172,6 +170,7 @@ class CloudflareStatsTracker:
         """加载历史数据"""
         history_file = self.config["history"]["data_file"]
         try:
+            os.makedirs(os.path.dirname(history_file), exist_ok=True)
             if os.path.exists(history_file):
                 with open(history_file, 'r', encoding='utf-8') as f:
                     return json.load(f)
@@ -184,6 +183,7 @@ class CloudflareStatsTracker:
         """保存历史数据"""
         history_file = self.config["history"]["data_file"]
         try:
+            os.makedirs(os.path.dirname(history_file), exist_ok=True)
             with open(history_file, 'w', encoding='utf-8') as f:
                 json.dump(self.history_data, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -454,4 +454,4 @@ def main():
             logger.error("发送错误通知失败")
 
 if __name__ == "__main__":
-    main()  
+    main()

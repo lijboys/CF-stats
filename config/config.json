@@ -1,0 +1,25 @@
+{
+  "cloudflare": {
+    "account_id": "${{ secrets.CF_ACCOUNT_ID }}",
+    "api_token": "${{ secrets.CF_API_TOKEN }}"
+  },
+  "telegram": {
+    "bot_token": "${{ secrets.TG_BOT_TOKEN }}",
+    "chat_id": "${{ secrets.TG_CHAT_ID }}"
+  },
+  "thresholds": {
+    "pages_request_increase": 30,  // 请求量增长超过30%触发报警
+    "pages_request_decrease": 25,  // 请求量下降超过25%触发报警
+    "workers_request_increase": 35,
+    "workers_request_decrease": 30
+  },
+  "retry": {
+    "max_attempts": 3,
+    "delay": 5
+  },
+  "history": {
+    "storage_days": 30,
+    "data_file": "history/requests_history.json"
+  }
+}
+  
